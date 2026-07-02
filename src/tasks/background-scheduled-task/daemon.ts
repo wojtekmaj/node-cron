@@ -1,11 +1,11 @@
 import { fileURLToPath } from "url";
 import logger, { noopLogger } from "../../logger";
 import { InlineScheduledTask } from "../inline-scheduled-task";
-import { ScheduledTask, TaskContext, TaskEvent, TaskOptions } from "../scheduled-task";
+import { TaskContext, TaskEvent, TaskOptions } from "../scheduled-task";
 import { IpcRunCoordinator } from "../../coordinator/ipc-run-coordinator";
 import { createID } from "../../create-id";
 
-export async function startDaemon(message: any): Promise<ScheduledTask> {
+export async function startDaemon(message: any): Promise<InlineScheduledTask> {
     const script = await importTaskModule(message.path);
 
     // The inline task in the daemon stays silent; the parent process logs from
@@ -136,7 +136,7 @@ function safelySerializeContext(context: TaskContext): TaskContext {
 
 
 export function bind(){
-  let task: ScheduledTask;
+  let task: InlineScheduledTask;
 
   process.on('message', async (message: any) => {
     switch(message.command){
@@ -159,17 +159,20 @@ export function bind(){
     case 'task:execute':
       if (!task) {
         // No task loaded yet: report it instead of dropping the message, or
-        // the parent's execute() waits for an event that never arrives.
+        // the parent's execute() waits for an event that never arrives. Echo the
+        // parent's correlation id so its filtered execute() matches this failure.
         sendEvent('execution:failed', {
           date: new Date(),
           dateLocalIso: new Date().toISOString(),
           triggeredAt: new Date(),
-          execution: { id: createID(), reason: 'invoked', error: new Error('Cannot execute: no task loaded') }
+          execution: { id: message.executionId ?? createID(), reason: 'invoked', error: new Error('Cannot execute: no task loaded') }
         });
         return task;
       }
       try {
-        await task.execute();
+        // Threads the parent's correlation id through so its execute() can
+        // match the forwarded event to this call, not a concurrent scheduled fire.
+        await task.execute(message.executionId);
       } catch(error: any){
         logger.debug('Daemon task:execute failed:', error);
       }
