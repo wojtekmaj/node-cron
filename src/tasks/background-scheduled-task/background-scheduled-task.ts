@@ -37,6 +37,11 @@ class BackgroundScheduledTask implements ScheduledTask{
   // The last actual execution, mirrored in the parent from the daemon's
   // forwarded finished/failed events.
   private _lastRun: LastRun | null = null;
+  // Tracked separately from stateMachine.state, which a 'task:stopped' message
+  // overwrites before the kill decision runs, hiding whether a run is still live.
+  private executing = false;
+  private killPending = false;
+  private pendingKillCleanup?: () => void;
 
   constructor(cronExpression: string, taskPath: string, options?: TaskOptions){
     this.cronExpression = cronExpression;
@@ -50,11 +55,11 @@ class BackgroundScheduledTask implements ScheduledTask{
     // events so runsLeft() works across the process boundary.
     this.timeMatcher = new TimeMatcher(cronExpression, options?.timezone);
     this.runCount = 0;
-    this.on('execution:started', () => { this.runCount++; });
+    this.on('execution:started', () => { this.runCount++; this.executing = true; });
     // Mirror the last actual execution from the daemon's events. Both carry the
     // execution's own timestamps, so lastRun reflects the real run time.
-    this.on('execution:finished', (context) => { this.recordLastRun(context.execution); });
-    this.on('execution:failed', (context) => { this.recordLastRun(context.execution); });
+    this.on('execution:finished', (context) => { this.executing = false; this.recordLastRun(context.execution); });
+    this.on('execution:failed', (context) => { this.executing = false; this.recordLastRun(context.execution); });
     // The logger lives in the parent process: it cannot cross the fork
     // boundary. The daemon runs with a no-op logger and forwards events, and
     // this process logs from those events using the configured logger.
@@ -63,14 +68,12 @@ class BackgroundScheduledTask implements ScheduledTask{
     this.runCoordinator = options?.distributed ? resolveRunCoordinator(options?.runCoordinator) : undefined;
 
     this.on('task:stopped', () => {
-      this.forkProcess?.kill();
-      this.forkProcess = undefined;
+      this.killForkWhenSettled();
       this.stateMachine.changeState('stopped');
     });
 
     this.on('task:destroyed', () => {
-      this.forkProcess?.kill();
-      this.forkProcess = undefined;
+      this.killForkWhenSettled();
       this.stateMachine.changeState('destroyed');
     });
   }
@@ -134,6 +137,43 @@ class BackgroundScheduledTask implements ScheduledTask{
     this._lastRun = lastRun;
   }
 
+  // Defers the kill until an in-flight run settles, so 'task:stopped' does not
+  // abort it mid-execution. A truly stuck daemon is still force-killed by the
+  // caller's stop()/destroy() timeout.
+  private killForkWhenSettled(): void {
+    if (!this.forkProcess) return;
+
+    if (!this.executing) {
+      this.killFork();
+      return;
+    }
+
+    if (this.killPending) return;
+    this.killPending = true;
+
+    const onSettled = () => this.killFork();
+
+    this.once('execution:finished', onSettled);
+    this.once('execution:failed', onSettled);
+
+    this.pendingKillCleanup = () => {
+      this.off('execution:finished', onSettled);
+      this.off('execution:failed', onSettled);
+    };
+  }
+
+  private clearPendingKillWait(): void {
+    this.pendingKillCleanup?.();
+    this.pendingKillCleanup = undefined;
+    this.killPending = false;
+  }
+
+  private killFork(): void {
+    this.clearPendingKillWait();
+    this.forkProcess?.kill();
+    this.forkProcess = undefined;
+  }
+
   start(): Promise<void> {
     return new Promise((resolve, reject) => {
       if (this.forkProcess) {
@@ -147,8 +187,7 @@ class BackgroundScheduledTask implements ScheduledTask{
       // schedule on its own, leading to orphaned/duplicate executions.
       const failStart = (error: Error) => {
         clearTimeout(timeout);
-        this.forkProcess?.kill();
-        this.forkProcess = undefined;
+        this.killFork();
         reject(error);
       };
 
@@ -244,16 +283,16 @@ class BackgroundScheduledTask implements ScheduledTask{
       
       const timeoutId = setTimeout(() => {
         clearTimeout(timeoutId);
-        this.forkProcess?.kill();
-        this.forkProcess = undefined;
+        this.killFork();
         reject(new Error('Stop operation timed out'))
       }, 5000);
       
       const cleanupAndResolve = () => {
         clearTimeout(timeoutId);
         this.off('task:stopped', onStopped);
-        
-        this.forkProcess = undefined;
+
+        // forkProcess is cleared by killForkWhenSettled, not here, so an
+        // in-flight run is not aborted mid-execution.
         resolve(undefined);
       };
 
@@ -293,8 +332,7 @@ class BackgroundScheduledTask implements ScheduledTask{
 
       const timeoutId = setTimeout(() => {
         clearTimeout(timeoutId);
-        this.forkProcess?.kill();
-        this.forkProcess = undefined;
+        this.killFork();
         reject(new Error('Destroy operation timed out'))
       }, 5000);
   

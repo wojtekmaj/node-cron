@@ -170,12 +170,25 @@ export async function shutdown(timeout = 5000): Promise<void> {
   const pending: Promise<any>[] = [];
 
   for (const task of tasks.values()) {
-    const busy = task.isBusy();
+    // Armed before stop() so a run finishing in that window is still caught.
     const wait = new Promise<void>(resolve => {
-      task.once('execution:finished', () => resolve());
-      task.once('execution:failed', () => resolve());
+      const onSettled = () => {
+        task.off('execution:finished', onSettled);
+        task.off('execution:failed', onSettled);
+        resolve();
+      };
+      task.once('execution:finished', onSettled);
+      task.once('execution:failed', onSettled);
     });
-    task.stop();
+
+    // Read before stop(), which flips the status away from 'running' at once.
+    const busy = task.isBusy();
+
+    // A rejected stop()/destroy() left unhandled would crash the process.
+    Promise.resolve(task.stop()).catch((error: any) => {
+      logger.error(`Error stopping task "${task.name}" during shutdown: ${error?.message ?? error}`);
+    });
+
     if (busy) {
       pending.push(wait);
     }
@@ -189,7 +202,9 @@ export async function shutdown(timeout = 5000): Promise<void> {
   }
 
   for (const task of tasks.values()) {
-    task.destroy();
+    Promise.resolve(task.destroy()).catch((error: any) => {
+      logger.error(`Error destroying task "${task.name}" during shutdown: ${error?.message ?? error}`);
+    });
   }
 }
 
