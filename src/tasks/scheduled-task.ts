@@ -18,12 +18,15 @@ export type TaskContext = {
   triggeredAt: Date;
   /** Why the execution was skipped. Present only on `execution:skipped`. */
   reason?: SkipReason;
+  /** The daemon's exit error. Present only on `task:failed`. */
+  error?: Error;
 }
 
 export type TaskEvent =
   | 'task:started'
   | 'task:stopped'
   | 'task:destroyed'
+  | 'task:failed'
   | 'execution:started'
   | 'execution:finished'
   | 'execution:failed'
