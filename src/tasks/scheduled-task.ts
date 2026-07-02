@@ -142,7 +142,9 @@ export interface ScheduledTask {
   id: string,
   name?: string,
   
+  /** Calling this on a destroyed task is a no-op. */
   start(): void | Promise<void>;
+  /** Calling this on a destroyed task is a no-op. */
   stop(): void | Promise<void>;
   getStatus(): string;
   destroy(): void | Promise<void>;
