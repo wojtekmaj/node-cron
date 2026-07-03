@@ -78,11 +78,19 @@ export default [
     external,
     plugins: [cjsReplace(), ...basePlugins()],
   },
-  // Type declarations: one bundled .d.ts for the public entry.
+  // Type declarations: separate ESM and CJS-flavored entry declarations.
   {
     input: "src/node-cron.ts",
     output: {
       file: "dist/node-cron.d.ts",
+      format: "es",
+    },
+    plugins: [dts()],
+  },
+  {
+    input: "src/node-cron.ts",
+    output: {
+      file: "dist/node-cron.d.cts",
       format: "es",
     },
     plugins: [dts()],

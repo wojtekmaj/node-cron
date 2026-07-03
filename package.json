@@ -11,9 +11,14 @@
   "types": "./dist/node-cron.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/node-cron.d.ts",
-      "import": "./dist/node-cron.js",
-      "require": "./dist/node-cron.cjs"
+      "import": {
+        "types": "./dist/node-cron.d.ts",
+        "default": "./dist/node-cron.js"
+      },
+      "require": {
+        "types": "./dist/node-cron.d.cts",
+        "default": "./dist/node-cron.cjs"
+      }
     }
   },
   "scripts": {
